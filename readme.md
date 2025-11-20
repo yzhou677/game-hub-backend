@@ -9,3 +9,11 @@ Provides a game recommendation API using Firestore candidate data + OpenAI.
 - Express
 - Firebase Admin SDK (Firestore)
 - OpenAI Node SDK
+
+## Deploy
+
+```bash
+cd functions
+npm install
+cd ..
+firebase deploy --only functions

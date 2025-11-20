@@ -40,7 +40,6 @@ build/Release
 # Dependency directories
 node_modules/
 jspm_packages/
-package-lock.json
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
@@ -145,3 +144,7 @@ vite.config.ts.timestamp-*
 # Firebase
 firebase-debug.log
 .service-account.json
+
+functions/.env
+functions/service-account.json
+functions/node_modules/
