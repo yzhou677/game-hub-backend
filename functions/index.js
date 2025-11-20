@@ -1,40 +1,52 @@
-import cors from "cors";
-import "dotenv/config.js";
-import express from "express";
-import admin from "firebase-admin";
-import { onRequest } from "firebase-functions/v2/https";
-import fs from "fs";
-import OpenAI from "openai";
-import path from "path";
+const cors = require("cors");
+const express = require("express");
+const admin = require("firebase-admin");
+const functions = require("firebase-functions");
+const { onRequest } = require("firebase-functions/v2/https");
+const OpenAI = require("openai");
+require("dotenv").config();
 
 // -------- Firebase Admin init --------
 
-// Load service account JSON manually
-const serviceAccount = JSON.parse(
-    fs.readFileSync(path.resolve("service-account.json"), "utf8")
-);
-
-// Initialize Firebase Admin
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-});
+admin.initializeApp();
 
 const db = admin.firestore();
+
+// -------- auth middleware --------
+
+async function authGuard(req, res, next) {
+    try {
+        const authHeader = req.headers.authorization || "";
+        const match = authHeader.match(/^Bearer (.+)$/);
+
+        if (!match) {
+            return res.status(401).json({ error: "Missing Authorization header" });
+        }
+
+        const idToken = match[1];
+        const decoded = await admin.auth().verifyIdToken(idToken);
+
+        if (decoded.email !== "yzhou677@gmail.com") {
+            return res.status(403).json({ error: "Not allowed" });
+        }
+
+        req.user = decoded;
+        next();
+    } catch (err) {
+        console.error("Auth error", err);
+        return res.status(401).json({ error: "Invalid or expired token" });
+    }
+}
 
 // -------- Candidate games cache --------
 
 let cachedGames = null;
 let cachedAt = 0;
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
-/**
- * Load rawgTopGames from Firestore with simple in-memory cache.
- * Set force = true to ignore cache and reload from Firestore.
- */
 async function loadCandidateGames(force = false) {
     const now = Date.now();
 
-    // Use cache if still fresh
     if (!force && cachedGames && now - cachedAt < CACHE_TTL_MS) {
         return cachedGames;
     }
@@ -49,67 +61,44 @@ async function loadCandidateGames(force = false) {
     }));
 
     cachedAt = now;
-    console.log(
-        `Loaded ${cachedGames.length} candidate games (force = ${force})`
-    );
+    console.log(`Loaded ${cachedGames.length} candidate games (force = ${force})`);
     return cachedGames;
 }
 
-// Optional: preload once on startup (non-blocking)
-loadCandidateGames().catch((err) =>
-    console.error("Initial candidate load failed:", err)
-);
+// loadCandidateGames().catch((err) =>
+//   console.error("Initial candidate load failed:", err)
+// );
 
-/**
- * Filter candidate games by genres inferred from user's favorites.
- * 1. Find games in our candidate list whose name matches favorites.
- * 2. Collect their genres as "favorite genres".
- * 3. Keep only candidate games that share at least one favorite genre.
- * 4. If filtering becomes empty, fall back to full list.
- */
+// -------- genre filter --------
+
 function filterByGenre(candidates, favorites) {
-    // Normalize favorite names to lowercase for loose matching
     const favLower = favorites.map((f) => f.toLowerCase());
 
-    // Find candidate games whose name matches a favorite
     const favGames = candidates.filter((g) =>
         favLower.includes((g.name || "").toLowerCase())
     );
 
-    // Collect genres of favorite games
-    const favGenres = new Set(
-        favGames.flatMap((g) => g.genres || [])
-    );
+    const favGenres = new Set(favGames.flatMap((g) => g.genres || []));
 
-    // No genre info -> return original list
-    if (!favGenres.size) {
-        return candidates;
-    }
+    if (!favGenres.size) return candidates;
 
-    // Keep only games that share at least one genre
     const filtered = candidates.filter((g) =>
         (g.genres || []).some((genre) => favGenres.has(genre))
     );
 
-    // Never return an empty pool; fallback to full list
     return filtered.length ? filtered : candidates;
 }
 
 // -------- Express app + OpenAI client --------
 
 const app = express();
-const port = process.env.PORT || 3000;
-
-// Basic middlewares
 app.use(cors());
 app.use(express.json());
 
-// Health check
 app.get("/status", (req, res) => {
     res.json({ status: "ok" });
 });
 
-// Manual cache refresh endpoint (for dev / admin)
 app.post("/admin/reload-candidates", async (req, res) => {
     try {
         await loadCandidateGames(true);
@@ -120,30 +109,45 @@ app.post("/admin/reload-candidates", async (req, res) => {
     }
 });
 
-// Create OpenAI client
-const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+// ----- OpenAI client -----
+let openaiApiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
 
-// LLM-based recommendation endpoint
+if (!openaiApiKey) {
+    const cfg = functions.config();
+    if (cfg.openai && cfg.openai.key) {
+        openaiApiKey = cfg.openai.key;
+    }
+}
+
+let client = null;
+
+if (openaiApiKey) {
+    client = new OpenAI({ apiKey: openaiApiKey });
+    console.log("OpenAI client initialized");
+} else {
+    console.error("No OpenAI API key found (neither .env nor functions config)");
+}
+
+
 app.post("/recommend", async (req, res) => {
     try {
+        if (!client) {
+            return res.status(500).json({
+                error: "OpenAI is not configured on the server",
+            });
+        }
+
         const { favorites } = req.body;
 
-        // Basic validation
         if (!Array.isArray(favorites) || favorites.length === 0) {
             return res.status(400).json({
                 error: "favorites must be a non-empty array",
             });
         }
 
-        // Load candidate games from Firestore (with cache)
         const candidates = await loadCandidateGames();
-
-        // Step 1: filter candidate pool by genres based on favorites
         const filteredCandidates = filterByGenre(candidates, favorites);
 
-        // Step 2: keep only simple fields for the LLM
         const simplified = filteredCandidates.map((g) => ({
             id: g.id,
             name: g.name,
@@ -183,47 +187,44 @@ Return ONLY JSON like:
                                     type: "object",
                                     properties: {
                                         id: { type: "number" },
-                                        reason: { type: "string" },
+                                        reason: { type: "string" }
                                     },
                                     required: ["id", "reason"],
-                                    additionalProperties: false,
-                                },
-                            },
+                                    additionalProperties: false
+                                }
+                            }
                         },
                         required: ["recommendations"],
-                        additionalProperties: false,
-                    },
-                },
-            },
+                        additionalProperties: false
+                    }
+                }
+            }
         });
 
         const llmResult = JSON.parse(response.output_text);
 
-        // Attach full game info plus LLM reason
         const finalResult = llmResult.recommendations.map((r) => {
             const game = candidates.find((g) => g.id === r.id);
-            // If for some reason not found, just return id + reason
             if (!game) {
-                return {
-                    id: r.id,
-                    name: null,
-                    reason: r.reason,
-                };
+                return { id: r.id, name: null, reason: r.reason };
             }
             return { ...game, reason: r.reason };
         });
 
         res.json({ recommendations: finalResult });
     } catch (err) {
-        console.error("LLM error:", err);
-        res.status(500).json({ error: "Internal LLM or Firestore error" });
+        console.error("🔥 FULL ERROR:", err);
+        return res.status(500).json({
+            error: err.message || err.toString()
+        });
     }
 });
 
-// Export Express app as a single HTTPS function
-export const api = onRequest(
+// -------- Export HTTPS function --------
+
+exports.api = onRequest(
     {
-        cors: true, // Enable CORS for browser calls
+        cors: true,
     },
     app
 );

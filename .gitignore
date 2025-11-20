@@ -40,6 +40,7 @@ build/Release
 # Dependency directories
 node_modules/
 jspm_packages/
+package-lock.json
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
@@ -125,6 +126,9 @@ dist
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
+# VSCode
+.vscode/
+
 # yarn v3
 .pnp.*
 .yarn/*
@@ -138,4 +142,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-service-account.json
+# Firebase
+firebase-debug.log
+.service-account.json
