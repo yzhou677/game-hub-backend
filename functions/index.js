@@ -52,13 +52,7 @@ async function loadCandidateGames(force = false) {
     }
 
     const snapshot = await db.collection("rawgTopGames").get();
-    cachedGames = snapshot.docs.map((doc) => ({
-        id: doc.data().id,
-        name: doc.data().name,
-        genres: (doc.data().genres || []).map((g) => g.name),
-        rating: doc.data().rating,
-        slug: doc.data().slug,
-    }));
+    cachedGames = snapshot.docs.map((doc) => doc.data());
 
     cachedAt = now;
     console.log(`Loaded ${cachedGames.length} candidate games (force = ${force})`);
@@ -70,7 +64,6 @@ async function loadCandidateGames(force = false) {
 // );
 
 // -------- genre filter --------
-
 function filterByGenre(candidates, favorites) {
     const favLower = favorites.map((f) => f.toLowerCase());
 
@@ -78,19 +71,23 @@ function filterByGenre(candidates, favorites) {
         favLower.includes((g.name || "").toLowerCase())
     );
 
-    const favGenres = new Set(favGames.flatMap((g) => g.genres || []));
+    // collect genre *names* from favorite games
+    const favGenres = new Set(
+        favGames.flatMap((g) =>
+            (g.genres || []).map((gen) => gen.name)
+        )
+    );
 
     if (!favGenres.size) return candidates;
 
     const filtered = candidates.filter((g) =>
-        (g.genres || []).some((genre) => favGenres.has(genre))
+        (g.genres || []).some((gen) => favGenres.has(gen.name))
     );
 
     return filtered.length ? filtered : candidates;
 }
 
 // -------- Express app + OpenAI client --------
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -146,8 +143,12 @@ app.post("/recommend", authGuard, async (req, res) => {
         }
 
         const candidates = await loadCandidateGames();
-        const filteredCandidates = filterByGenre(candidates, favorites);
+        let filteredCandidates = filterByGenre(candidates, favorites);
+        if (filteredCandidates.length < 8) {
+            filteredCandidates = candidates.slice(0, 8);
+        }
 
+        // -------- LLM payload --------
         const simplified = filteredCandidates.map((g) => ({
             id: g.id,
             name: g.name,
@@ -161,7 +162,7 @@ User favorites: ${favorites.join(", ")}.
 Candidate games (JSON array):
 ${JSON.stringify(simplified)}
 
-From ONLY these candidate games, select 5 games the user is most likely to enjoy.
+From ONLY these candidate games, select 8 games the user is most likely to enjoy.
 Return ONLY JSON like:
 {
   "recommendations": [
@@ -183,6 +184,8 @@ Return ONLY JSON like:
                         properties: {
                             recommendations: {
                                 type: "array",
+                                minItems: 8,
+                                maxItems: 8,
                                 items: {
                                     type: "object",
                                     properties: {
