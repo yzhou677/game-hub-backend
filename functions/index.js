@@ -129,7 +129,7 @@ if (openaiApiKey) {
 }
 
 
-app.post("/recommend", async (req, res) => {
+app.post("/recommend", authGuard, async (req, res) => {
     try {
         if (!client) {
             return res.status(500).json({
