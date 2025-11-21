@@ -59,10 +59,6 @@ async function loadCandidateGames(force = false) {
     return cachedGames;
 }
 
-// loadCandidateGames().catch((err) =>
-//   console.error("Initial candidate load failed:", err)
-// );
-
 // -------- genre filter --------
 function filterByGenre(candidates, favorites) {
     const favLower = favorites.map((f) => f.toLowerCase());
@@ -125,6 +121,7 @@ if (openaiApiKey) {
     console.error("No OpenAI API key found (neither .env nor functions config)");
 }
 
+// -------- /recommend --------
 
 app.post("/recommend", authGuard, async (req, res) => {
     try {
@@ -148,27 +145,34 @@ app.post("/recommend", authGuard, async (req, res) => {
             filteredCandidates = candidates.slice(0, 8);
         }
 
-        // -------- LLM payload --------
-        const simplified = filteredCandidates.map((g) => ({
-            id: g.id,
+        const simplified = filteredCandidates.map((g, idx) => ({
+            index: idx,
             name: g.name,
             genres: g.genres,
             rating: g.rating,
         }));
 
+        const validIndexes = simplified.map((g) => g.index);
+
         const prompt = `
 User favorites: ${favorites.join(", ")}.
 
+You are a game recommendation engine.
+You MUST ONLY recommend from the following candidate games array.
+Each game has a numeric "index". Use this "index" to reference games.
+DO NOT invent new games or indices that are not in the list.
+
 Candidate games (JSON array):
-${JSON.stringify(simplified)}
+${JSON.stringify(simplified, null, 2)}
 
 From ONLY these candidate games, select 8 games the user is most likely to enjoy.
 Return ONLY JSON like:
 {
   "recommendations": [
-    { "id": number, "reason": string }
+    { "index": number, "reason": string }
   ]
 }
+Where "index" is one of the provided indices.
 `;
 
         const response = await client.responses.create({
@@ -189,10 +193,13 @@ Return ONLY JSON like:
                                 items: {
                                     type: "object",
                                     properties: {
-                                        id: { type: "number" },
+                                        index: {
+                                            type: "integer",
+                                            enum: validIndexes
+                                        },
                                         reason: { type: "string" }
                                     },
-                                    required: ["id", "reason"],
+                                    required: ["index", "reason"],
                                     additionalProperties: false
                                 }
                             }
@@ -207,16 +214,19 @@ Return ONLY JSON like:
         const llmResult = JSON.parse(response.output_text);
 
         const finalResult = llmResult.recommendations.map((r) => {
-            const game = candidates.find((g) => g.id === r.id);
+            const game = filteredCandidates[r.index];
             if (!game) {
-                return { id: r.id, name: null, reason: r.reason };
+                return { id: null, name: null, reason: r.reason };
             }
-            return { ...game, reason: r.reason };
+            return {
+                ...game,
+                reason: r.reason
+            };
         });
 
         res.json({ recommendations: finalResult });
     } catch (err) {
-        console.error("🔥 FULL ERROR:", err);
+        console.error("FULL ERROR:", err);
         return res.status(500).json({
             error: err.message || err.toString()
         });
