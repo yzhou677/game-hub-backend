@@ -140,12 +140,31 @@ app.post("/recommend", authGuard, async (req, res) => {
         }
 
         const candidates = await loadCandidateGames();
-        let filteredCandidates = filterByGenre(candidates, favorites);
-        if (filteredCandidates.length < 8) {
-            filteredCandidates = candidates.slice(0, 8);
+
+        // Genre filtering based on favorites
+        const genreFiltered = filterByGenre(candidates, favorites);
+
+        // Exclude favorites, but only if we still have at least 8 games left
+        const favoritesLower = favorites.map((f) => f.toLowerCase());
+        let pool = genreFiltered.filter(
+            (g) =>
+                !favoritesLower.includes(
+                    (g.name || "").toLowerCase()
+                )
+        );
+
+        // If excluding favorites leaves fewer than 8, fall back to genreFiltered
+        if (pool.length < 8) {
+            pool = genreFiltered;
         }
 
-        const simplified = filteredCandidates.map((g, idx) => ({
+        // Safety: if still somehow fewer than 8, you could optionally fall back to all candidates
+        if (pool.length < 8) {
+            pool = candidates;
+        }
+
+        // Build simplified list for the LLM
+        const simplified = pool.map((g, idx) => ({
             index: idx,
             name: g.name,
             genres: g.genres,
@@ -221,7 +240,7 @@ Return ONLY JSON like:
         const llmResult = JSON.parse(response.output_text);
 
         const finalResult = llmResult.recommendations.map((r) => {
-            const game = filteredCandidates[r.index];
+            const game = pool[r.index];
             if (!game) {
                 return { id: null, name: null, reason: r.reason };
             }
