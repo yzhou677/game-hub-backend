@@ -165,14 +165,18 @@ DO NOT invent new games or indices that are not in the list.
 Candidate games (JSON array):
 ${JSON.stringify(simplified, null, 2)}
 
-From ONLY these candidate games, select 8 games the user is most likely to enjoy.
+From ONLY these candidate games:
+
+1. Select **8 games** the user is most likely to enjoy.
+2. Provide a **summary** explaining WHY (overall reasoning).
+
 Return ONLY JSON like:
 {
+  "summary": string,
   "recommendations": [
     { "index": number, "reason": string }
   ]
 }
-Where "index" is one of the provided indices.
 `;
 
         const response = await client.responses.create({
@@ -186,6 +190,9 @@ Where "index" is one of the provided indices.
                     schema: {
                         type: "object",
                         properties: {
+                            summary: {
+                                type: "string"
+                            },
                             recommendations: {
                                 type: "array",
                                 minItems: 8,
@@ -204,7 +211,7 @@ Where "index" is one of the provided indices.
                                 }
                             }
                         },
-                        required: ["recommendations"],
+                        required: ["summary", "recommendations"],
                         additionalProperties: false
                     }
                 }
@@ -224,7 +231,11 @@ Where "index" is one of the provided indices.
             };
         });
 
-        res.json({ recommendations: finalResult });
+        res.json({
+            summary: llmResult.summary,
+            recommendations: finalResult
+        });
+
     } catch (err) {
         console.error("FULL ERROR:", err);
         return res.status(500).json({
